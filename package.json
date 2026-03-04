@@ -1,6 +1,6 @@
 {
   "name": "pi-session-auto-rename",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Automatically names pi sessions with AI, with configurable naming model",
   "type": "module",
   "keywords": [
