@@ -366,6 +366,9 @@ export default function autoSessionName(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		namingAttempted = false;
+		namingInProgress = false;
+
 		const restoredModel = restoreModelConfig(ctx);
 		if (restoredModel) {
 			setNameModel(restoredModel);
@@ -380,11 +383,28 @@ export default function autoSessionName(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("session_fork", async (_event, ctx) => {
+	pi.on("session_switch", async (_event, ctx) => {
+		namingAttempted = false;
+		namingInProgress = false;
+
 		const restoredModel = restoreModelConfig(ctx);
 		if (restoredModel) {
 			setNameModel(restoredModel);
 		}
+	});
+
+	pi.on("session_fork", async (_event, ctx) => {
+		namingAttempted = false;
+		namingInProgress = false;
+
+		const restoredModel = restoreModelConfig(ctx);
+		if (restoredModel) {
+			setNameModel(restoredModel);
+		}
+	});
+
+	pi.on("message_end", async (_event, ctx) => {
+		await attemptNaming(ctx);
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
