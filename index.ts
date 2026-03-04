@@ -247,7 +247,13 @@ export default function autoSessionName(pi: ExtensionAPI) {
 				return null;
 			}
 
-			const response = await complete(model, { messages: [prompt] }, { apiKey, maxTokens: 32 });
+			const response = await complete(model, { messages: [prompt] }, { apiKey, maxTokens: 128 });
+			const responseDebug = `model=${model.provider}/${model.id} stopReason=${response.stopReason}${response.errorMessage ? ` error=${response.errorMessage}` : ""} content=${JSON.stringify(response.content)}`;
+
+			if (response.stopReason === "error") {
+				notify(ctx, `Failed to name session: ${responseDebug}`, "warning");
+				return null;
+			}
 
 			const rawName = response.content
 				.filter((block): block is { type: "text"; text: string } => block.type === "text")
@@ -256,7 +262,7 @@ export default function autoSessionName(pi: ExtensionAPI) {
 			const sessionName = sanitizeSessionName(rawName);
 
 			if (!sessionName) {
-				notify(ctx, "Session name response was empty.", "warning");
+				notify(ctx, `Session name response was empty: ${responseDebug}`, "warning");
 				return null;
 			}
 
