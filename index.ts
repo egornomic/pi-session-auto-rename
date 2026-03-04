@@ -15,6 +15,10 @@ const FULL_HISTORY_PROMPT =
 	"You create short, descriptive session names for chat sessions with AI based on the full conversation history. Use 2-6 words in Title Case. " +
 	"Respond with only the name, no quotes or punctuation.";
 
+const NAMING_SYSTEM_PROMPT =
+	"You create short, descriptive session names for chat sessions with AI. Use 2-6 words in Title Case. " +
+	"Respond with only the name, no quotes or punctuation.";
+
 type NameModelConfig = {
 	provider: string;
 	id: string;
@@ -247,7 +251,11 @@ export default function autoSessionName(pi: ExtensionAPI) {
 				return null;
 			}
 
-			const response = await complete(model, { messages: [prompt] }, { apiKey, maxTokens: 128 });
+			const response = await complete(
+				model,
+				{ systemPrompt: NAMING_SYSTEM_PROMPT, messages: [prompt] },
+				{ apiKey, maxTokens: 128 },
+			);
 			const responseDebug = `model=${model.provider}/${model.id} stopReason=${response.stopReason}${response.errorMessage ? ` error=${response.errorMessage}` : ""} content=${JSON.stringify(response.content)}`;
 
 			if (response.stopReason === "error") {
