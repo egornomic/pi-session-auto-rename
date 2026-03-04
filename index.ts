@@ -1,3 +1,6 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { complete } from "@mariozechner/pi-ai";
 import { Container, getEditorKeybindings, Input, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
@@ -6,6 +9,7 @@ import { getConversationTranscript, getFirstUserMessageText, sanitizeSessionName
 const DEFAULT_MODEL_PROVIDER = "anthropic";
 const DEFAULT_MODEL_ID = "claude-haiku-4-5";
 const CONFIG_ENTRY_TYPE = "rename-ai-config";
+const CONFIG_FILE_PATH = join(homedir(), ".pi", "agent", "extensions", "pi-session-auto-rename.json");
 
 const NAME_PROMPT =
 	"You create short, descriptive session names for chat sessions with AI based on the first user message in the chat. Use 2-6 words in Title Case. " +
@@ -23,6 +27,13 @@ type NameModelConfig = {
 	provider: string;
 	id: string;
 };
+
+function getDefaultModelConfig(): NameModelConfig {
+	return {
+		provider: DEFAULT_MODEL_PROVIDER,
+		id: DEFAULT_MODEL_ID,
+	};
+}
 
 function buildNamePrompt(firstMessage: string) {
 	return {
@@ -76,17 +87,67 @@ function parseModelRef(value: string): NameModelConfig | null {
 	return { provider, id };
 }
 
-function restoreModelConfig(ctx: ExtensionContext): NameModelConfig | null {
-	const branch = ctx.sessionManager.getBranch();
-	for (let i = branch.length - 1; i >= 0; i--) {
-		const entry = branch[i];
+function normalizeModelConfig(data: unknown): NameModelConfig | null {
+	if (!data || typeof data !== "object") return null;
+
+	const provider = (data as { provider?: unknown }).provider;
+	const id = (data as { id?: unknown }).id;
+	if (typeof provider !== "string" || typeof id !== "string") return null;
+
+	const normalizedProvider = provider.trim();
+	const normalizedId = id.trim();
+	if (!normalizedProvider || !normalizedId) return null;
+
+	return {
+		provider: normalizedProvider,
+		id: normalizedId,
+	};
+}
+
+function restoreSessionModelConfig(ctx: ExtensionContext): NameModelConfig | null {
+	const entries = ctx.sessionManager.getEntries();
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
 		if (entry.type !== "custom" || entry.customType !== CONFIG_ENTRY_TYPE) continue;
-		const data = entry.data as NameModelConfig | undefined;
-		if (!data?.provider || !data?.id) continue;
+		const data = normalizeModelConfig(entry.data);
+		if (!data) continue;
 		return data;
 	}
 
 	return null;
+}
+
+function restoreStoredModelConfig(): NameModelConfig | null {
+	try {
+		const content = readFileSync(CONFIG_FILE_PATH, "utf8");
+		const parsed = JSON.parse(content) as unknown;
+		return normalizeModelConfig(parsed);
+	} catch {
+		return null;
+	}
+}
+
+function persistStoredModelConfig(model: NameModelConfig): boolean {
+	try {
+		mkdirSync(dirname(CONFIG_FILE_PATH), { recursive: true });
+		writeFileSync(CONFIG_FILE_PATH, `${JSON.stringify(model, null, 2)}\n`, "utf8");
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function restoreModelConfig(ctx: ExtensionContext): NameModelConfig | null {
+	const storedModel = restoreStoredModelConfig();
+	if (storedModel) {
+		return storedModel;
+	}
+
+	const sessionModel = restoreSessionModelConfig(ctx);
+	if (sessionModel) {
+		persistStoredModelConfig(sessionModel);
+	}
+	return sessionModel;
 }
 
 async function selectModelConfig(ctx: ExtensionContext, currentModel: NameModelConfig): Promise<NameModelConfig | null> {
@@ -111,9 +172,11 @@ async function selectModelConfig(ctx: ExtensionContext, currentModel: NameModelC
 
 	const selected = await ctx.ui.custom<NameModelConfig | null>((tui, theme, _kb, done) => {
 		const kb = getEditorKeybindings();
+		const currentRef = modelToRef(currentModel);
 		const container = new Container();
 		container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
 		container.addChild(new Text(theme.fg("accent", theme.bold("Select Rename Model"))));
+		container.addChild(new Text(theme.fg("muted", `Current: ${currentRef}`)));
 		container.addChild(new Text(theme.fg("muted", "Search:")));
 
 		const searchInput = new Input();
@@ -122,7 +185,6 @@ async function selectModelConfig(ctx: ExtensionContext, currentModel: NameModelC
 		const listContainer = new Container();
 		container.addChild(listContainer);
 
-		const currentRef = modelToRef(currentModel);
 		const searchMatches = (model: NameModelConfig, query: string) => {
 			if (!query) return true;
 			const q = query.toLowerCase();
@@ -215,16 +277,24 @@ async function selectModelConfig(ctx: ExtensionContext, currentModel: NameModelC
 export default function autoSessionName(pi: ExtensionAPI) {
 	let namingAttempted = false;
 	let namingInProgress = false;
-	let nameModel: NameModelConfig = {
-		provider: DEFAULT_MODEL_PROVIDER,
-		id: DEFAULT_MODEL_ID,
-	};
+	let nameModel: NameModelConfig = restoreStoredModelConfig() ?? getDefaultModelConfig();
 
-	function setNameModel(model: NameModelConfig, persist = false) {
+	function setNameModel(model: NameModelConfig, persist = false): boolean {
 		nameModel = model;
-		if (persist) {
-			pi.appendEntry<NameModelConfig>(CONFIG_ENTRY_TYPE, model);
+		if (!persist) return true;
+
+		pi.appendEntry<NameModelConfig>(CONFIG_ENTRY_TYPE, model);
+		return persistStoredModelConfig(model);
+	}
+
+	function restoreNameModel(ctx: ExtensionContext) {
+		const restoredModel = restoreModelConfig(ctx);
+		if (restoredModel) {
+			setNameModel(restoredModel);
+			return;
 		}
+
+		setNameModel(getDefaultModelConfig());
 	}
 
 	async function generateSessionName(
@@ -335,15 +405,30 @@ export default function autoSessionName(pi: ExtensionAPI) {
 					return;
 				}
 
-				setNameModel(parsed, true);
+				const persisted = setNameModel(parsed, true);
+				if (!persisted) {
+					notify(ctx, `Rename model set to ${modelToRef(parsed)} for this runtime, but failed to persist it.`, "warning");
+					return;
+				}
+
 				notify(ctx, `Rename model set to ${modelToRef(parsed)}`, "info");
 				return;
 			}
 
+			notify(ctx, `Current rename model: ${modelToRef(nameModel)}`, "info");
 			const selectedModel = await selectModelConfig(ctx, nameModel);
 			if (!selectedModel) return;
 
-			setNameModel(selectedModel, true);
+			const persisted = setNameModel(selectedModel, true);
+			if (!persisted) {
+				notify(
+					ctx,
+					`Rename model set to ${modelToRef(selectedModel)} for this runtime, but failed to persist it.`,
+					"warning",
+				);
+				return;
+			}
+
 			notify(ctx, `Rename model set to ${modelToRef(selectedModel)}`, "info");
 		},
 	});
@@ -369,38 +454,26 @@ export default function autoSessionName(pi: ExtensionAPI) {
 		namingAttempted = false;
 		namingInProgress = false;
 
-		const restoredModel = restoreModelConfig(ctx);
-		if (restoredModel) {
-			setNameModel(restoredModel);
-		}
+		restoreNameModel(ctx);
 		await attemptNaming(ctx);
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
-		const restoredModel = restoreModelConfig(ctx);
-		if (restoredModel) {
-			setNameModel(restoredModel);
-		}
+		restoreNameModel(ctx);
 	});
 
 	pi.on("session_switch", async (_event, ctx) => {
 		namingAttempted = false;
 		namingInProgress = false;
 
-		const restoredModel = restoreModelConfig(ctx);
-		if (restoredModel) {
-			setNameModel(restoredModel);
-		}
+		restoreNameModel(ctx);
 	});
 
 	pi.on("session_fork", async (_event, ctx) => {
 		namingAttempted = false;
 		namingInProgress = false;
 
-		const restoredModel = restoreModelConfig(ctx);
-		if (restoredModel) {
-			setNameModel(restoredModel);
-		}
+		restoreNameModel(ctx);
 	});
 
 	pi.on("message_end", async (_event, ctx) => {

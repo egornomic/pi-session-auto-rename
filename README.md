@@ -18,7 +18,7 @@ pi install git:github.com/egornomic/pi-session-auto-rename
 
 - Automatic naming when a session starts or after first assistant response
 - `/name-ai` command to rename from full conversation history
-- `/name-ai-config` command to pick or set the naming model (`provider/model`)
+- `/name-ai-config` command to show the current naming model and pick/set a new one (`provider/model`)
 
 ## Example
 
@@ -30,4 +30,5 @@ User first message: "Design a migration plan for our billing schema"
 ## Notes
 
 - The extension uses your configured model keys in pi.
+- Selected naming model is persisted in `~/.pi/agent/extensions/pi-session-auto-rename.json`, so it survives restarts and new sessions.
 - If no API key exists for the selected naming model, it shows a warning and keeps the current session name.
