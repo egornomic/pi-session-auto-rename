@@ -1,10 +1,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { complete } from "@mariozechner/pi-ai";
-import { Container, getEditorKeybindings, Input, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
-import { getConversationTranscript, getFirstUserMessageText, sanitizeSessionName, type SessionEntry } from "./utils.ts";
+import { complete, type Api, type Model, type UserMessage } from "@earendil-works/pi-ai";
+import { DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Container, Input, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
+import { getConversationTranscript, getFirstUserMessageText, sanitizeSessionName } from "./utils.ts";
 
 const DEFAULT_MODEL_PROVIDER = "anthropic";
 const DEFAULT_MODEL_ID = "claude-haiku-4-5";
@@ -28,6 +28,9 @@ type NameModelConfig = {
 	id: string;
 };
 
+type NamingContext = Pick<ExtensionContext, "hasUI" | "ui" | "modelRegistry">;
+type NamingAttemptContext = Pick<ExtensionContext, "hasUI" | "ui" | "sessionManager" | "modelRegistry">;
+
 function getDefaultModelConfig(): NameModelConfig {
 	return {
 		provider: DEFAULT_MODEL_PROVIDER,
@@ -35,12 +38,12 @@ function getDefaultModelConfig(): NameModelConfig {
 	};
 }
 
-function buildNamePrompt(firstMessage: string) {
+function buildNamePrompt(firstMessage: string): UserMessage {
 	return {
-		role: "user" as const,
+		role: "user",
 		content: [
 			{
-				type: "text" as const,
+				type: "text",
 				text: `${NAME_PROMPT}\n\nFirst user message:\n${firstMessage}`,
 			},
 		],
@@ -48,12 +51,12 @@ function buildNamePrompt(firstMessage: string) {
 	};
 }
 
-function buildHistoryPrompt(transcript: string) {
+function buildHistoryPrompt(transcript: string): UserMessage {
 	return {
-		role: "user" as const,
+		role: "user",
 		content: [
 			{
-				type: "text" as const,
+				type: "text",
 				text: `${FULL_HISTORY_PROMPT}\n\nConversation history:\n${transcript}`,
 			},
 		],
@@ -170,8 +173,7 @@ async function selectModelConfig(ctx: ExtensionContext, currentModel: NameModelC
 		return null;
 	}
 
-	const selected = await ctx.ui.custom<NameModelConfig | null>((tui, theme, _kb, done) => {
-		const kb = getEditorKeybindings();
+	const selected = await ctx.ui.custom<NameModelConfig | null>((tui, theme, keybindings, done) => {
 		const currentRef = modelToRef(currentModel);
 		const container = new Container();
 		container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
@@ -252,10 +254,10 @@ async function selectModelConfig(ctx: ExtensionContext, currentModel: NameModelC
 			},
 			handleInput(data: string) {
 				if (
-					kb.matches(data, "selectUp") ||
-					kb.matches(data, "selectDown") ||
-					kb.matches(data, "selectConfirm") ||
-					kb.matches(data, "selectCancel")
+					keybindings.matches(data, "tui.select.up") ||
+					keybindings.matches(data, "tui.select.down") ||
+					keybindings.matches(data, "tui.select.confirm") ||
+					keybindings.matches(data, "tui.select.cancel")
 				) {
 					selectList.handleInput(data);
 					const selectedItem = selectList.getSelectedItem();
@@ -297,17 +299,22 @@ export default function autoSessionName(pi: ExtensionAPI) {
 		setNameModel(getDefaultModelConfig());
 	}
 
-	async function generateSessionName(
-		ctx: {
-			hasUI: boolean;
-			ui: { notify: (message: string, level: "info" | "warning" | "error") => void };
-			modelRegistry: {
-				find: (provider: string, modelId: string) => { provider: string; id: string } | undefined;
-				getApiKey: (model: { provider: string; id: string }) => Promise<string | undefined>;
-			};
-		},
-		prompt: { role: "user"; content: Array<{ type: "text"; text: string }>; timestamp: number },
-	): Promise<string | null> {
+	async function getModelAuth(ctx: NamingContext, model: Model<Api>) {
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok) {
+			notify(ctx, auth.error, "warning");
+			return null;
+		}
+
+		if (!auth.apiKey) {
+			notify(ctx, `No API key for ${model.provider}. Configure it via /login or models.json.`, "warning");
+			return null;
+		}
+
+		return auth;
+	}
+
+	async function generateSessionName(ctx: NamingContext, prompt: UserMessage): Promise<string | null> {
 		try {
 			const model = ctx.modelRegistry.find(nameModel.provider, nameModel.id);
 			if (!model) {
@@ -315,16 +322,13 @@ export default function autoSessionName(pi: ExtensionAPI) {
 				return null;
 			}
 
-			const apiKey = await ctx.modelRegistry.getApiKey(model);
-			if (!apiKey) {
-				notify(ctx, `No API key for ${model.provider}. Configure it via /login or models.json.`, "warning");
-				return null;
-			}
+			const auth = await getModelAuth(ctx, model);
+			if (!auth) return null;
 
 			const response = await complete(
 				model,
 				{ systemPrompt: NAMING_SYSTEM_PROMPT, messages: [prompt] },
-				{ apiKey, maxTokens: 128 },
+				{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 128 },
 			);
 			const responseDebug = `model=${model.provider}/${model.id} stopReason=${response.stopReason}${response.errorMessage ? ` error=${response.errorMessage}` : ""} content=${JSON.stringify(response.content)}`;
 
@@ -352,15 +356,7 @@ export default function autoSessionName(pi: ExtensionAPI) {
 		}
 	}
 
-	async function attemptNaming(ctx: {
-		hasUI: boolean;
-		ui: { notify: (message: string, level: "info" | "warning" | "error") => void };
-		sessionManager: { getBranch: () => SessionEntry[] };
-		modelRegistry: {
-			find: (provider: string, modelId: string) => { provider: string; id: string } | undefined;
-			getApiKey: (model: { provider: string; id: string }) => Promise<string | undefined>;
-		};
-	}) {
+	async function attemptNaming(ctx: NamingAttemptContext) {
 		if (namingAttempted || namingInProgress) return;
 		if (pi.getSessionName()) return;
 
@@ -399,11 +395,8 @@ export default function autoSessionName(pi: ExtensionAPI) {
 					return;
 				}
 
-				const apiKey = await ctx.modelRegistry.getApiKey(model);
-				if (!apiKey) {
-					notify(ctx, `No API key for ${parsed.provider}. Configure it via /login or models.json.`, "warning");
-					return;
-				}
+				const auth = await getModelAuth(ctx, model);
+				if (!auth) return;
 
 				const persisted = setNameModel(parsed, true);
 				if (!persisted) {
@@ -459,20 +452,6 @@ export default function autoSessionName(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
-		restoreNameModel(ctx);
-	});
-
-	pi.on("session_switch", async (_event, ctx) => {
-		namingAttempted = false;
-		namingInProgress = false;
-
-		restoreNameModel(ctx);
-	});
-
-	pi.on("session_fork", async (_event, ctx) => {
-		namingAttempted = false;
-		namingInProgress = false;
-
 		restoreNameModel(ctx);
 	});
 
