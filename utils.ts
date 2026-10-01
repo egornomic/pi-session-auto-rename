@@ -27,9 +27,7 @@ export function extractTextFromContent(content: MessageContent): string {
 }
 
 export function getFirstUserMessageText(entries: SessionEntry[]): string | null {
-	const ordered = [...entries].reverse();
-
-	for (const entry of ordered) {
+	for (const entry of entries) {
 		if (entry.type !== "message") continue;
 		const message = entry.message;
 		if (!message || message.role !== "user" || message.content === undefined) continue;
@@ -41,10 +39,9 @@ export function getFirstUserMessageText(entries: SessionEntry[]): string | null 
 }
 
 export function getConversationTranscript(entries: SessionEntry[]): string {
-	const ordered = [...entries].reverse();
 	const lines: string[] = [];
 
-	for (const entry of ordered) {
+	for (const entry of entries) {
 		if (entry.type !== "message") continue;
 		const message = entry.message;
 		if (!message || message.content === undefined) continue;

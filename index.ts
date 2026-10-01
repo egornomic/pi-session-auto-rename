@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { complete, type Api, type Model, type UserMessage } from "@earendil-works/pi-ai";
+import type { Api, Model, UserMessage } from "@earendil-works/pi-ai";
 import { DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Input, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
 import { getConversationTranscript, getFirstUserMessageText, sanitizeSessionName } from "./utils.ts";
@@ -322,13 +322,10 @@ export default function autoSessionName(pi: ExtensionAPI) {
 				return null;
 			}
 
-			const auth = await getModelAuth(ctx, model);
-			if (!auth) return null;
-
-			const response = await complete(
+			const response = await ctx.modelRegistry.complete(
 				model,
 				{ systemPrompt: NAMING_SYSTEM_PROMPT, messages: [prompt] },
-				{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 128 },
+				{ maxTokens: 128 },
 			);
 			const responseDebug = `model=${model.provider}/${model.id} stopReason=${response.stopReason}${response.errorMessage ? ` error=${response.errorMessage}` : ""} content=${JSON.stringify(response.content)}`;
 

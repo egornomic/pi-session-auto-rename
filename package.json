@@ -3,6 +3,9 @@
   "version": "0.1.4",
   "description": "Automatically names pi sessions with AI, with configurable naming model",
   "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
   "keywords": [
     "pi-package",
     "pi",
